@@ -1,0 +1,47 @@
+# ── 敏感数据（绝不提交）────────────────────────────
+# 会话与凭据
+session.json
+*.session.json
+cookies*.json
+cookie*.txt
+qr_login.png
+
+# 抓包原始数据（含真实 cookie / 账号 / 请求体）
+capture/
+*.jsonl
+netlog*.json
+net-*.jsonl
+*.har
+
+# 浏览器 profile
+chrome-profile/
+.edge-cdp/
+
+# 运行时产物
+daily_log.json
+progress*.json
+*.log
+
+# ── Python ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ── Node ───────────────────────────────────────────
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# ── 编辑器 / 系统 ──────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── 个人配置 ───────────────────────────────────────
+config.local.json
+.local/
