@@ -13,13 +13,14 @@
 
 ## ⚠️ 免责声明（先读这个）
 
-本项目为**网络安全与协议分析的学习研究**，目的是理解现代 Web 应用在
+本项目为**网络安全与协议分析的技术研究**，目的是理解现代 Web 应用在
 **会话管理、传输加密、行为风控**方面的工程实现。
 
-- ❌ **不鼓励、不支持**任何违反平台服务条款、学术诚信规范或当地法律的行为
-- ❌ 作者**不对**任何使用者的行为及后果负责
-- ✅ 所有数据均来自**公开可访问的前端资源**与**研究者本人账号的授权测试**
-- ✅ 仓库中**不含**任何真实个人信息、会话凭据或第三方数据
+- ❌ **禁止任何商业用途**（付费代刷、代挂服务、商业培训等）
+- ❌ 禁止违反所在地法律法规，禁止用于他人账号，禁止恶意用途
+- ⚠️ **本项目按"原样"提供，不附带任何担保；使用者自行承担全部风险与后果**
+- ✅ 所有数据均来自**公开可访问的前端资源**与**研究者本人账号的测试**
+- ✅ 仓库中**不含**任何第三方的个人信息、账号凭据或未授权数据
 
 **完整条款见 [DISCLAIMER.md](DISCLAIMER.md)。若你不同意，请立即停止使用本仓库。**
 
@@ -173,6 +174,7 @@ node tools/deobf.mjs in.js out.js   # ROT=286 node tools/deobf.mjs ...
 | [`tools/deobf.mjs`](tools/deobf.mjs) | **通用 obfuscator.io 反混淆器**（自动探测数组旋转量） |
 | [`tools/anchor.mjs`](tools/anchor.mjs) | 从已知锚点反推字符串数组旋转量 |
 | [`tools/zhs_api_client.py`](tools/zhs_api_client.py) | 只读 API 客户端（查课程 / 章节 / 学习状态） |
+| [`tools/zhs_daily.py`](tools/zhs_daily.py) | **工程化验证**：把还原的协议组装成完整可运行实现 |
 
 ### 4.3 量化成果
 
@@ -225,7 +227,8 @@ node tools/deobf.mjs in.js out.js   # ROT=286 node tools/deobf.mjs ...
 └── tools/
     ├── deobf.mjs                   # obfuscator.io 反混淆器
     ├── anchor.mjs                  # 旋转量反推
-    └── zhs_api_client.py           # 只读 API 客户端
+    ├── zhs_api_client.py           # 只读 API 客户端
+    └── zhs_daily.py                # 工程化验证：协议完整实现
 ```
 
 ---
@@ -246,16 +249,45 @@ pip install curl_cffi pycryptodome
 ```bash
 # 自动探测旋转量并还原
 node tools/deobf.mjs obfuscated.js deobfuscated.js
+
+# 解不出来时，先用锚点求旋转量
+node tools/anchor.mjs app.js 1ce 1e3:queryCourse 1df:videolist
+ROT=286 node tools/deobf.mjs app.js
 ```
 
 ### 只读查询课程信息
 
+需要一个有效的会话 Cookie（自行从浏览器开发者工具导出）：
+
 ```bash
-# 需要一个有效的会话 Cookie（自行从浏览器导出）
-python tools/zhs_api_client.py --cookie "CASLOGC=...; jt-cas=..." course
-python tools/zhs_api_client.py --cookie "..." chapters
-python tools/zhs_api_client.py --cookie "..." state
+# 解析会话身份与有效期
+python tools/zhs_api_client.py --cookie "<COOKIE>" whoami
+
+# 课程概览 / 章节 / 学习状态
+python tools/zhs_api_client.py --cookie "..." --course <ID> course
+python tools/zhs_api_client.py --cookie "..." --course <ID> chapters
+python tools/zhs_api_client.py --cookie "..." --course <ID> state
+
+# 账号健康检查 / 成绩规则
+python tools/zhs_api_client.py --cookie "..." --school <ID> --recruit <ID> diag
+python tools/zhs_api_client.py --cookie "..." --course-id <ID> --recruit <ID> rules
+
+# 加密演示（把 JSON 加密成 secretStr，并回验解密）
+python tools/zhs_api_client.py --cookie x crypto '{"hello":"world"}'
 ```
+
+### 工程化验证：完整协议实现
+
+[`tools/zhs_daily.py`](tools/zhs_daily.py) 把 docs/ 中还原的全部协议细节
+（登录链路、加密方案、上报节奏、字段结构）组装成一个可运行的完整实现，
+用以**证明研究结论成立**：
+
+```bash
+python tools/zhs_daily.py --course <RECRUIT_AND_COURSE_ID>
+```
+
+它会：检查会话（过期则弹二维码）→ 读取课程 → 分批上报学习时长 → 记录日志。
+详见脚本头部的文档字符串。
 
 ---
 
