@@ -1,339 +1,286 @@
-# 智慧树（知到）共享课 · 协议逆向研究
+# 智慧树共享课 · 协议逆向笔记
 
-> 对**智慧树 / 知到**共享学分课 Web 端的一次完整的、以**实测为唯一依据**的协议分析。
-> 覆盖登录态、加密层、接口清单、进度上报机制、弹题机制与风控体系。
->
-> **仅供学习与研究使用。详见 [DISCLAIMER.md](DISCLAIMER.md)。**
+前段时间想搞清楚智慧树的共享课到底怎么跑的。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Research](https://img.shields.io/badge/type-protocol%20research-blue.svg)](#)
-[![No Warranty](https://img.shields.io/badge/warranty-none-red.svg)](DISCLAIMER.md)
+起因挺简单——登录状态存在哪、前端那套加密是不是认真的、服务端凭什么判断你"在学"。
+这几个问题我翻了一圈现成的开源实现，结果越看越糊涂：它们互相矛盾，
+而且好几处明显跟不上平台更新。
 
----
+干脆自己从头测一遍。**这份仓库是那次折腾的结果，所有结论都来自我自己抓的包和跑通的请求。**
 
-## ⚠️ 免责声明（先读这个）
-
-本项目为**网络安全与协议分析的技术研究**，目的是理解现代 Web 应用在
-**会话管理、传输加密、行为风控**方面的工程实现。
-
-- ❌ **禁止任何商业用途**（付费代刷、代挂服务、商业培训等）
-- ❌ 禁止违反所在地法律法规，禁止用于他人账号，禁止恶意用途
-- ⚠️ **本项目按"原样"提供，不附带任何担保；使用者自行承担全部风险与后果**
-- ✅ 所有数据均来自**公开可访问的前端资源**与**研究者本人账号的测试**
-- ✅ 仓库中**不含**任何第三方的个人信息、账号凭据或未授权数据
-
-**完整条款见 [DISCLAIMER.md](DISCLAIMER.md)。若你不同意，请立即停止使用本仓库。**
+> ⚠️ 仅供技术学习与研究，禁止商用。用之前请读 [DISCLAIMER.md](DISCLAIMER.md)。
 
 ---
 
 ## 目录
 
-- [一、研究背景与目标](#一研究背景与目标)
-- [二、研究方法](#二研究方法)
-- [三、研究过程](#三研究过程)
-- [四、核心成果](#四核心成果)
-- [五、关键发现](#五关键发现)
-- [六、仓库结构](#六仓库结构)
-- [七、快速开始](#七快速开始)
-- [八、错误码速查](#八错误码速查)
-- [九、踩坑记录](#九踩坑记录)
-- [十、参考项目](#十参考项目)
+- [先说方法](#先说方法)
+- [几个我觉得有意思的点](#几个我觉得有意思的点)
+- [和现有开源实现不一致的地方](#和现有开源实现不一致的地方)
+- [仓库里有什么](#仓库里有什么)
+- [怎么跑](#怎么跑)
+- [没搞明白的部分](#没搞明白的部分)
 
 ---
 
-## 一、研究背景与目标
+## 先说方法
 
-智慧树（知到）是国内主要的高校在线课程平台之一，其**共享学分课**采用
-SPA + 微服务网关 + 统一登录中心（CAS）的架构。
+整个研究有个原则：**拿不到证据的就不写**。所以下面每条结论后面都能追溯到
+「是哪次抓包」或者「是 JS 第几行」。
 
-**研究目标**（纯技术视角）：
+手里就三样工具，缺一不可：
 
-| # | 目标 | 说明 |
-|---|---|---|
-| 1 | 搞清**登录态如何保存与续期** | CAS 票据链、cookie 分层、JWT 生命周期 |
-| 2 | 还原**传输层加密方案** | 前端如何加密请求体、密钥如何管理 |
-| 3 | 梳理**业务接口** | 课程、章节、进度、弹题的调用关系 |
-| 4 | 理解**学习时长的计算与上报模型** | 客户端节奏、服务端累加规则 |
-| 5 | 分析**风控体系** | 反调试、行为检测、验证码触发条件 |
+**抓包用的是 Chrome NetLog**，不是 DevTools。
 
----
+这个选择是被逼的。一开始我用 CDP 挂上去抓，页面直接白屏，
+`document.readyState` 卡在 `loading` 不动。不开 CDP 就正常。
+对照做了两遍才确认——**平台检测到调试器附着会主动把文档搞坏**。
 
-## 二、研究方法
+后来反混淆代码里翻到原因：
 
-本次研究坚持一个原则：**所有结论必须有实测证据，不接受任何推测。**
-
-### 2.1 三种取证手段（并用、互相印证）
-
-| 手段 | 工具 | 拿到什么 | 局限 |
-|---|---|---|---|
-| **真实流量捕获** | Chrome NetLog<br>`--log-net-log` + `IncludeCookiesAndCredentials` | 完整请求头、响应头、Cookie、跳转链 | **拿不到 HTTPS 请求体**（TLS 密文） |
-| **前端 JS 逆向** | 自研 obfuscator.io 反混淆器<br>[`tools/deobf.mjs`](tools/deobf.mjs) | 加密算法、密钥、上报节奏、判定阈值 | 需处理字符串数组旋转 |
-| **API 独立复现** | `curl_cffi`（Chrome TLS 指纹 + HTTP/2） | 验证推断是否正确 | 会被风控；需谨慎 |
-
-### 2.2 为什么不用调试器（DevTools / CDP）
-
-> **这是本次研究最重要的方法学决策。**
-
-研究早期尝试用 Chrome DevTools Protocol（`Network.enable` + `Target.setAutoAttach`）抓包，
-结果**页面直接白屏、`readyState` 永远停在 `loading`**。
-
-**对照实验**（不开 CDP，页面正常）证明：**平台检测到调试器附着后会主动破坏页面。**
-
-```js
-// 反混淆后定位到的反调试逻辑（浏览器层）
-setInterval(checkout, 60000);     // 每 60 秒校验原生 XMLHttpRequest 是否被 hook
-// PointerEvent 上的 isTrusted 检查
-// notTrustScript 命中 → 上报 collector2c.zhihuishu.com → 暂停播放 + 跳转
+```javascript
+setInterval(checkout, 60000);   // 每分钟验一次原生 XMLHttpRequest 还健在吗
+// 加上 PointerEvent 的 isTrusted 检查
+// 命中就走 notTrustScript：上报 collector2c → 暂停播放 → 跳转
 ```
 
-**结论：** 该平台的反调试**完全实现在浏览器层**。
-因此，**任何不经过浏览器的 API 客户端天然绕过全部反调试机制** ——
-这既是研究结论，也是本次方法论的核心。
+反调试**全实现在浏览器层**。想明白这点之后，整个研究的路子就顺了：
+反调试跑在浏览器里，那不走浏览器的客户端天然就碰不到它。这不是什么绕过技巧，是架构决定的。
 
----
+NetLog 也不是万能的。它有个坑我踩了：`--net-log-capture-mode` 有三个选项，
+`IncludeSocketBytes` 听着最全，实际上给的是**TLS 密文**——
+HTTPS 的 body 在离开进程之前就加密了，拿到的全是乱码。
+只有 SNI 能看出访问了哪个域名。
 
-## 三、研究过程
+所以：**NetLog 永远拿不到 HTTPS 请求体**。这事别浪费时间，我在这上面折了不少。
 
-### 阶段 0 · 首次接触（走弯路）
+那请求体怎么办？只能靠反混淆读源码。
 
-- 尝试从 Edge 的 cookie 数据库直接读取 → **失败**（浏览器运行时数据库被独占锁）
-- 尝试 `robocopy /B` 备份绕过 → **失败**（需要 Backup 权限，非管理员不可用）
-- **教训**：不要跟浏览器的数据库较劲，走网络层。
+播放器主包 `stuStudy.*.js` 有 8.5 MB，过了一遍 obfuscator.io。这玩意儿有个自防御特性——
+**把字符串数组整体旋转 N 位，但代码里的索引还是旋转前的位置**。
 
-### 阶段 1 · 建立可信的流量捕获通道
+这个坑特别阴。不处理的话反混淆出来的代码能跑，**但是所有字符串都是不相干的**，
+而且**不报错**。第一眼看到只会觉得"这混淆太深了，解不开"，很容易劝退。
 
-最终方案：**Chrome NetLog**
-
-```
-chrome.exe --user-data-dir=<干净 profile> \
-  --log-net-log=capture.json \
-  --net-log-capture-mode=IncludeCookiesAndCredentials
-```
-
-`IncludeCookiesAndCredentials` 能拿到**完整请求头 + Cookie**，足以还原登录链路。
-
-> **发现**：`IncludeSocketBytes` 模式拿到的是 **TLS 密文**，
-> 只有 SNI 可读，对 HTTPS 请求体毫无帮助。**这是很多人会踩的坑。**
-
-### 阶段 2 · 登录链路还原
-
-从 NetLog 的跳转链里逐跳还原出完整 SSO 流程（见
-[docs/02-login-and-session.md](docs/02-login-and-session.md)）。
-
-### 阶段 3 · 前端 JS 反混淆（本次技术难点）
-
-播放器主包 `stuStudy.*.js` 有 **8.5 MB**，经 [obfuscator.io](https://obfuscator.io/) 处理：
-
-- 字符串数组 + 索引引用
-- **自防御：数组旋转**（self-defending rotation）
-
-**突破方法：** 用已知的"索引 → 字符串"锚点反推旋转量。
+正解是拿已知锚点反推旋转量——找几个你确定"这里应该是什么字符串"的位置，
+挨个试 R。
 
 ```bash
-node tools/anchor.mjs          # 用已知锚点求 ROT
-node tools/deobf.mjs in.js out.js   # ROT=286 node tools/deobf.mjs ...
+node tools/anchor.mjs app.js 1ce 1e3:queryCourse 1df:videolist
+# → ✅ 推断旋转量: 140
 ```
 
-实测结果：`stuStudy.js` 旋转量 **286**（6/6 锚点一致），`app.js` 旋转量 **140**。
+`stuStudy.js` 是 286，6 个独立锚点全指向同一个数，这就不可能是巧合了。
 
-### 阶段 4 · 加密层还原
-
-反混淆后直接定位到加密函数与硬编码密钥，并用真实密文**双向验证**
-（加密 → 与服务端通信成功；解密 → 还原出可读明文）。
-
-**7/7 个密钥全部实测验证通过。**
-
-### 阶段 5 · 上报机制还原
-
-从 `startTotalTimer` 提取定时器周期，从 `saveDdsjkTimeInWhileFn` 提取上报条件与数组结构。
-
-### 阶段 6 · 服务端行为验证
-
-用独立 API 客户端（`curl_cffi`，Chrome TLS 指纹）实测调用，
-通过**服务端返回码**反向确认客户端推断。
+最后一步是**用真实请求验证**。JS 里读出来的算法对不对，
+拿真密文解一下、或者拿解出来的算法构造个请求发过去，服务端认了才算数。
+7 把密钥全都是这么验的。
 
 ---
 
-## 四、核心成果
+## 几个我觉得有意思的点
 
-### 4.1 完整协议文档
+### 服务端其实不怎么信客户端
 
-| 文档 | 内容 |
-|---|---|
-| [docs/02-login-and-session.md](docs/02-login-and-session.md) | CAS 票据链、cookie 分层、24 小时 JWT 生命周期 |
-| [docs/03-crypto.md](docs/03-crypto.md) | AES-128-CBC 方案、全部密钥、ev 编码器 |
-| [docs/04-api-reference.md](docs/04-api-reference.md) | 20+ 接口清单与参数 |
-| [docs/05-progress-reporting.md](docs/05-progress-reporting.md) | 上报节奏、watchPoint 算法、服务端累加模型 |
-| [docs/06-risk-control.md](docs/06-risk-control.md) | 反调试、行为风控、验证码触发条件 |
-| [docs/07-findings.md](docs/07-findings.md) | **关键发现与踩坑合集** |
-
-### 4.2 可复用工具
-
-| 工具 | 用途 |
-|---|---|
-| [`tools/deobf.mjs`](tools/deobf.mjs) | **通用 obfuscator.io 反混淆器**（自动探测数组旋转量） |
-| [`tools/anchor.mjs`](tools/anchor.mjs) | 从已知锚点反推字符串数组旋转量 |
-| [`tools/zhs_api_client.py`](tools/zhs_api_client.py) | 只读 API 客户端（查课程 / 章节 / 学习状态） |
-| [`tools/zhs_daily.py`](tools/zhs_daily.py) | **工程化验证**：把还原的协议组装成完整可运行实现 |
-
-### 4.3 量化成果
+上报的时候客户端会传一个 `totalStudyTime`（累计学习时长），
+但实测下来**服务端基本无视它**，只拿 `playTimes`（本次增量）做累加：
 
 ```
-反混淆代码量        : 9.0 MB（8.55 MB + 0.48 MB）
-还原接口数          : 20+
-实测验证的密钥      : 7 / 7
-端到端跑通的视频    : 31 / 31
+新 studyTotalTime = 旧 studyTotalTime + playTimes
 ```
+
+我是这么发现的：同一批数据发第二遍，服务端直接回 `code: -8`，
+message 是"学习总时长下降了"。
+
+```
+第一遍  totalStudyTime=415, playTimes=540  → 服务端存了 892 (= 352 + 540)
+第二遍  totalStudyTime=415, playTimes=540  → -8
+```
+
+**这个 `-8` 我在任何公开资料里都没见过。** 后来才明白是"传的值小于服务端已存值"。
+
+顺带一提，服务端**不限制**这个值超过视频总长度。我一度以为超了会触发验证码，
+后来做了对照实验——892 > 415 被正常接受，跟验证码没关系。
+**单点观察推不出因果，这是我这次最大的教训。**
+
+### 完成阈值是 81%，不是 91%
+
+源码里是 `percentage >= 0x51`。`0x51` 就是 81。
+
+流传比较广的说法是 91%，不知道哪来的。不过实际用的时候还是以服务端返回的
+`watchState == 1` 为准比较稳妥。
+
+### `questionIds` 是个类型陷阱
+
+弹题的题目列表接口返回的 `questionIds` 长这样：
+
+```json
+{"questionIds": [295788232, 295788233]}
+```
+
+看着是数组对吧。**实际上是逗号分隔的字符串。**
+
+```python
+{"questionIds": [295788232, 295788233]}    # → code: -1
+{"questionIds": "295788232,295788233"}     # → code: 0
+```
+
+传错了就给你一个语焉不详的 `-1`，查了半天。
+
+### 固定 IV
+
+业务接口是 AES-128-CBC，IV 写死成 `1g3qqdh4jvbskb9x`，全局一个。
+
+CBC 用固定 IV 意味着**相同明文永远产生相同密文**。从密码学角度这基本等于没保护。
+说白了这套加密是拿来防爬虫的——提高点逆向成本，不是真打算保密。
+真正的安全边界在 HTTPS 和风控那边。
+
+反正密钥都在前端 JS 里硬编码着，谁都能抠出来。
+
+### 登录必须过滑块
+
+我本来想做成账号密码自动登录，试了下：
+
+```
+不带 validate    → {"status": -1}
+带失效 validate  → {"status": -4, "msg": "滑动验证码校验失败"}
+```
+
+**密码登录必须带有效的易盾滑块 token。** 纯 API 走不通。
+
+顺带提醒一句：失败的尝试会累加响应里的 `pwdErrorCount`。我当时看到这个数变了就立刻停手了，
+没继续试——账号安全比研究进度重要。
+
+扫码登录倒是没这个问题，因为它走的是手机 App 确认，不经过 Web 端的滑块。
+所以最后落地的是扫码方案。
+
+### 会话只有 24 小时
+
+`jt-cas` 是个 JWT，解出来一看：
+
+```
+iat: 2026-09-28 15:40:37
+exp: 2026-09-29 15:40:37    ← 正好 24 小时
+```
+
+过期之后所有接口 401。我试过用 `CASTGC`（CAS 的 TGT）静默续期，
+结果服务端返回登录页 HTML，还把 `CASTGC` 清空了——**TGT 跟它一起死的**。
+
+所以只能每天重新登一次。这也是为什么最后落地的脚本是"每天跑，过期就弹二维码"。
 
 ---
 
-## 五、关键发现
+## 和现有开源实现不一致的地方
 
-以下每一条都有实测证据，其中**多条推翻了公开参考项目的结论**。
+参考过 ocsjs 和 fuckZHS 的思路，但好几处结论跟它们对不上。
+下面这些**以我的实测为准**：
 
-| # | 发现 | 说明 |
+| | 常见说法 | 实测 |
 |---|---|---|
-| 1 | **`CASLOGC` 由 `cloudapi.polymas.com` 下发** | 不是 `passport`；参考项目的模型有误 |
-| 2 | **`Origin`/`Referer` 必须是 `studyvideoh5`** | 参考项目用的是已废弃的 `studyh5` |
-| 3 | **完成阈值是 81%（`0x51`）** | 不是广泛流传的 91% |
-| 4 | **主上报周期是 300 秒** | 不是 30 秒 |
-| 5 | **服务端是 `studyTotalTime += playTimes` 累加** | 它**忽略**客户端上报的 `totalStudyTime` |
-| 6 | **`totalStudyTime` 必须单调不减** | 否则返回 `-8`（新发现的错误码） |
-| 7 | **`questionIds` 必须是字符串** | 传数组会返回 `-1` |
-| 8 | **`Origin`/`Referer` 的值影响风控判定** | 用错域名会显著提高被拦概率 |
-| 9 | **平台反调试全在浏览器层** | API 客户端天然绕过 |
-| 10 | **`dateFormate` 恒以 `000` 结尾** | = `int(time.time()) * 1000` |
+| `Origin` / `Referer` | `studyh5.zhihuishu.com` | **`studyvideoh5.zhihuishu.com`** |
+| 主上报周期 | 30 秒 | **300 秒**（`0x493e0`） |
+| 完成阈值 | 91% | **81%**（`0x51`） |
+| `CASLOGC` 谁下发的 | `passport` | **`cloudapi.polymas.com`** |
+| 账号密码登录 | 可用 | **被易盾挡住** |
 
-> 详见 [docs/07-findings.md](docs/07-findings.md)
+第一条尤其要命——域名写错会直接踩风控，而且现象很模糊，不好定位。
+
+**教训就一句：公开项目会过期，结论得自己验。**
 
 ---
 
-## 六、仓库结构
+## 仓库里有什么
 
-```
-.
-├── README.md                       # 本文件
-├── DISCLAIMER.md                   # 免责声明（务必阅读）
-├── LICENSE                         # MIT
-├── .gitignore
-├── docs/
-│   ├── 01-methodology.md           # 研究方法论与取证手段
-│   ├── 02-login-and-session.md     # 登录态与会话管理
-│   ├── 03-crypto.md                # 传输层加密
-│   ├── 04-api-reference.md         # 接口清单
-│   ├── 05-progress-reporting.md    # 进度上报机制
-│   ├── 06-risk-control.md          # 风控与反调试
-│   └── 07-findings.md              # 关键发现与踩坑
-└── tools/
-    ├── deobf.mjs                   # obfuscator.io 反混淆器
-    ├── anchor.mjs                  # 旋转量反推
-    ├── zhs_api_client.py           # 只读 API 客户端
-    └── zhs_daily.py                # 工程化验证：协议完整实现
-```
+文档按主题拆开了，都在 [`docs/`](docs/)：
 
----
+- **[01 · 研究方法](docs/01-methodology.md)** —— 三种取证手段、反混淆怎么破、验证闭环，还有我走的弯路
+- **[02 · 登录与会话](docs/02-login-and-session.md)** —— CAS 票据链、cookie 分层、24 小时 JWT
+- **[03 · 加密](docs/03-crypto.md)** —— AES 方案、全部密钥、ev 编码器
+- **[04 · 接口](docs/04-api-reference.md)** —— 20 多个接口，附 `recruitAndCourseId` 的来源
+- **[05 · 进度上报](docs/05-progress-reporting.md)** —— 上报节奏、watchPoint 算法、服务端累加模型
+- **[06 · 风控](docs/06-risk-control.md)** —— 反调试、行为检测、错误码表
+- **[07 · 关键发现](docs/07-findings.md)** —— 上面那些点的详细版，外加 8 条踩坑记录
 
-## 七、快速开始
+工具在 [`tools/`](tools/)：
 
-### 环境
+**`deobf.mjs`** —— 通用 obfuscator.io 反混淆器，能自动探测数组旋转量。
+不只对智慧树有用，任何 obfuscator.io 的产物都能试。
 
 ```bash
-Python >= 3.10
-Node.js >= 18
+node tools/deobf.mjs obfuscated.js out.js
+```
 
+**`anchor.mjs`** —— 上面那个解不出来时的兜底：用锚点手推旋转量。
+
+**`zhs_api_client.py`** —— 只读客户端，7 个子命令，用来验证文档里写的协议是不是真的。
+
+**`zhs_daily.py`** —— 把文档里所有细节拼起来的一个完整可运行实现。
+放它主要是当"证据"——如果文档写错了，这东西跑不起来。
+
+---
+
+## 怎么跑
+
+```bash
 pip install curl_cffi pycryptodome
 ```
 
-### 反混淆任意 obfuscator.io 产物
-
 ```bash
-# 自动探测旋转量并还原
-node tools/deobf.mjs obfuscated.js deobfuscated.js
+# 先看会话身份和有效期
+python tools/zhs_api_client.py --cookie "<你的COOKIE>" whoami
 
-# 解不出来时，先用锚点求旋转量
-node tools/anchor.mjs app.js 1ce 1e3:queryCourse 1df:videolist
-ROT=286 node tools/deobf.mjs app.js
-```
-
-### 只读查询课程信息
-
-需要一个有效的会话 Cookie（自行从浏览器开发者工具导出）：
-
-```bash
-# 解析会话身份与有效期
-python tools/zhs_api_client.py --cookie "<COOKIE>" whoami
-
-# 课程概览 / 章节 / 学习状态
+# 课程信息 / 章节 / 学习状态
 python tools/zhs_api_client.py --cookie "..." --course <ID> course
-python tools/zhs_api_client.py --cookie "..." --course <ID> chapters
 python tools/zhs_api_client.py --cookie "..." --course <ID> state
 
-# 账号健康检查 / 成绩规则
+# 账号健康检查（有没有异常记录）
 python tools/zhs_api_client.py --cookie "..." --school <ID> --recruit <ID> diag
-python tools/zhs_api_client.py --cookie "..." --course-id <ID> --recruit <ID> rules
 
-# 加密演示（把 JSON 加密成 secretStr，并回验解密）
+# 加密演示：加密一段 JSON 再解回来
 python tools/zhs_api_client.py --cookie x crypto '{"hello":"world"}'
 ```
 
-### 工程化验证：完整协议实现
+Cookie 从浏览器开发者工具里复制。`recruitAndCourseId` 在课程页 URL 上：
 
-[`tools/zhs_daily.py`](tools/zhs_daily.py) 把 docs/ 中还原的全部协议细节
-（登录链路、加密方案、上报节奏、字段结构）组装成一个可运行的完整实现，
-用以**证明研究结论成立**：
-
-```bash
-python tools/zhs_daily.py --course <RECRUIT_AND_COURSE_ID>
+```
+https://studyvideoh5.zhihuishu.com/stuStudy?recruitAndCourseId=<就是这串>
 ```
 
-它会：检查会话（过期则弹二维码）→ 读取课程 → 分批上报学习时长 → 记录日志。
-详见脚本头部的文档字符串。
+`zhs_daily.py` 用法一样，`--course` 传同一个值。
 
 ---
 
-## 八、错误码速查
+## 没搞明白的部分
 
-| code | 含义 | 备注 |
-|---|---|---|
-| `0` | 成功 | 业务成功判定用 **code 而非 HTTP 状态码** |
-| `-8` | **学习总时长下降了** | 本文首次记录；`totalStudyTime` 必须单调不减 |
-| `-9` | 学习时间已结束 | 超出课程允许的学习时间窗 |
-| `-10` | 同时播放多个视频 | 多开检测 |
-| `-12` | 需要滑块验证 | 易盾；会话级状态 |
-| `403` | 登录过期 | 需重新登录 |
-| `422` | 参数或状态异常 | 播放器会暂停 |
+有几个问题我确实没解决，直接写出来比编个解释强：
 
----
+**验证码的触发条件**。我排除了四种假设——TLS 指纹不对（换 Chrome 真实 JA3 后行为一样）、
+账号被标记（`exceptionActionDetail` 显示 `count: 0`）、时长超限（服务端根本不限制）、
+间隔太短（60 秒连发两次也过了）。
 
-## 九、踩坑记录
+目前的经验规律是：**少发点没必要的请求**，好像就不太容易触发。
+有一次我把"视频已经达标之后再补发一次上报"这个动作去掉，之后连续 14 个视频 27 次上报，
+一次都没触发。
 
-> 完整版见 [docs/07-findings.md](docs/07-findings.md)，这里是浓缩版。
+但这是**观察到的现象，不是搞清楚的机制**。我猜可能存在累积风险分，但没证据。
 
-1. **NetLog 的 `IncludeSocketBytes` 拿不到 HTTPS 请求体** —— 拿到的是 TLS 密文
-2. **CDP 调试会破坏页面** —— 反调试会主动让文档失效，必须换 NetLog 方案
-3. **反混淆必须处理数组旋转** —— 否则所有字符串索引全是错的，且症状隐蔽
-4. **`questionIds` 类型陷阱** —— 文档里没写，传错类型只返回一个语焉不详的 `-1`
-5. **`Origin` 写错会踩风控** —— 用参考项目的旧域名会显著提高被拦概率
-6. **运行中的浏览器无法读取 cookie 数据库** —— 数据库被独占锁，非管理员也无法用备份 API 绕过
-7. **PowerShell 的 `Set-Content -Encoding UTF8` 会写 BOM** —— 可能导致脚本解析失败
+**`recruitAndCourseId` 怎么生成的**。34 位十六进制，17 个字节，
+每个字节的高半字节恒为 4 或 5——这形状不像哈希，像某种编码。
+我试了 256 种单字节异或、256 种常量减法，都还原不成数字。
+
+不过这玩意儿不影响使用，当个不透明句柄原样传就行。
+
+**易盾的 token 怎么生成**。没碰，主动避开的。
+
+**TGT 自己的有效期**。它和 `jt-cas` 一起失效，我分不清是本身到期还是被连带吊销。
 
 ---
 
-## 十、参考项目
+## 最后
 
-研究过程中参考了以下公开项目的**思路**（但其具体结论均经过本次实测复核，
-多处已被证伪或修正）：
+MIT 许可，随便用，但**别拿去商用**。
 
-- [ocsjs/ocsjs](https://github.com/ocsjs/ocsjs) —— 纯 DOM 自动化的思路
-- [fuckZHS](https://github.com/search?q=fuckZHS) —— 早期 API 层实现
+写这份东西的初衷是把一个系统的实现讲清楚，不是提供工具。
+技术研究跟行为正当是两码事——这个界限自己把握。
 
-> **重要**：本项目**不是**它们的复刻。所有协议细节均来自本次独立实测，
-> 与参考项目不一致之处，以本项目实测结果为准（并在文档中标注了差异）。
-
----
-
-## 许可
-
-代码：[MIT](LICENSE) ｜ 文档：CC BY-NC-SA 4.0
-
-**使用即表示你已阅读并同意 [DISCLAIMER.md](DISCLAIMER.md)。**
+有问题开 Issue。
