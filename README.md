@@ -1095,3 +1095,11 @@ ROT=<n> node tools/deobf.mjs input.js output.js
 ## 许可
 
 代码 MIT，文档 CC BY-NC-SA 4.0。
+
+---
+
+## 相关项目
+
+- **[zhihuishu-toolkit](https://github.com/eplayn/zhihuishu-toolkit)** —— 基于本文结论实现的刷课工具。
+  统一入口、按课程类型自适应的交互式菜单，覆盖学习进度、考试掌握度、
+  视频、作业与每日签到；文中的每一条结论都能在该工具中得到验证。
